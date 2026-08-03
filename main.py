@@ -10,6 +10,11 @@ try:
 except ImportError:
     ftv = None
 
+try:
+    import flet_webview as ftwv
+except ImportError:
+    ftwv = None
+
 # =============================================
 # SUPABASE - قاعدة بيانات مشتركة بين كل المستخدمين
 # (تستخدم urllib فقط، بدون أي مكتبات خارجية إضافية،
@@ -696,6 +701,20 @@ async def main(page: ft.Page):
     def is_youtube_url(url: str) -> bool:
         return "youtube.com" in url or "youtu.be" in url
 
+    def extract_youtube_id(url: str):
+        import re
+        patterns = [
+            r"youtu\.be/([A-Za-z0-9_-]{6,})",
+            r"youtube\.com/watch\?v=([A-Za-z0-9_-]{6,})",
+            r"youtube\.com/embed/([A-Za-z0-9_-]{6,})",
+            r"youtube\.com/shorts/([A-Za-z0-9_-]{6,})",
+        ]
+        for pat in patterns:
+            m = re.search(pat, url)
+            if m:
+                return m.group(1)
+        return None
+
     async def resolve_stream_url(url: str):
         """يحاول استخراج رابط تشغيل مباشر (خصوصاً لروابط يوتيوب) عبر yt-dlp.
         يرجع (stream_url, None) عند النجاح، أو (None, رسالة الخطأ) عند الفشل."""
@@ -748,6 +767,73 @@ async def main(page: ft.Page):
             ),
         )
         _open_dialog(page, loading_dlg)
+
+        # روابط يوتيوب: تُعرض عبر المشغّل الرسمي المضمّن (embed) مباشرة،
+        # بدون استخراج رابط تشغيل مباشر عبر yt-dlp — هذا يفادي فحوصات
+        # يوتيوب لمكافحة السحب الآلي، ويناسب المحتوى المملوك للناشر نفسه.
+        if is_youtube_url(url):
+            _close_dialog(page, loading_dlg)
+            video_id = extract_youtube_id(url)
+            if not video_id:
+                fallback_dlg = ft.AlertDialog(
+                    modal=True,
+                    title=ft.Text("تعذّر تشغيل الفيديو"),
+                    content=ft.Container(
+                        width=320,
+                        content=ft.Text(
+                            "تعذّر التعرف على معرف فيديو يوتيوب من هذا الرابط.",
+                            size=12, color=c("text_secondary"), selectable=True,
+                        ),
+                    ),
+                    actions=[ft.TextButton("إغلاق", on_click=lambda e: _close_dialog(page, fallback_dlg))],
+                )
+                _open_dialog(page, fallback_dlg)
+                return
+
+            embed_url = f"https://www.youtube.com/embed/{video_id}?autoplay=1&playsinline=1"
+            watch_url = f"https://www.youtube.com/watch?v={video_id}"
+
+            def _open_in_browser(e):
+                page.launch_url(watch_url)
+
+            try:
+                if ftwv is None:
+                    raise RuntimeError("حزمة flet-webview غير مثبتة")
+                player_body = ft.Container(
+                    height=260,
+                    content=ftwv.WebView(url=embed_url, expand=True),
+                )
+            except Exception as ex:
+                player_body = ft.Container(
+                    height=140,
+                    alignment=ALIGN_CENTER,
+                    content=ft.Column(
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            ft.Text(
+                                "تعذّر تشغيل مشغل يوتيوب الداخلي. تأكد من تثبيت:\n"
+                                "python -m pip install flet-webview\n\n"
+                                f"تفاصيل: {ex}",
+                                size=12, color=c("text_secondary"), selectable=True,
+                                text_align=ft.TextAlign.CENTER,
+                            ),
+                            ft.ElevatedButton(
+                                "فتح الفيديو بالمتصفح",
+                                icon=ft.Icons.OPEN_IN_NEW,
+                                on_click=_open_in_browser,
+                            ),
+                        ],
+                    ),
+                )
+
+            dlg = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("تشغيل الحلقة"),
+                content=ft.Container(content=player_body, width=380),
+                actions=[ft.TextButton("إغلاق", on_click=lambda e: _close_dialog(page, dlg))],
+            )
+            _open_dialog(page, dlg)
+            return
 
         stream_url, error = await resolve_stream_url(url)
 
